@@ -1,0 +1,580 @@
+@page "/"
+@using VideoReview.Shared.Services
+@inject IVideoReviewService ReviewService
+
+<PageTitle>VideoReview</PageTitle>
+
+<div class="review-shell" tabindex="0" @ref="shellElement" @onkeydown="HandleKeyDown">
+    <header class="review-header">
+        <div>
+            <p class="eyebrow">VideoReview</p>
+            <h1>视频挑选工作台</h1>
+        </div>
+
+        <div class="header-actions">
+            <select class="preset-select" @bind="selectedPreset" disabled="@isBusy" title="抽帧模式" @onkeydown:stopPropagation="true">
+                <option value="@ExtractionPreset.Balanced">均衡</option>
+                <option value="@ExtractionPreset.SensitiveScene">敏感场景</option>
+                <option value="@ExtractionPreset.StrictScene">严格场景</option>
+                <option value="@ExtractionPreset.EvenCoverage">均匀覆盖</option>
+                <option value="@ExtractionPreset.RandomReview">随机巡检</option>
+            </select>
+            <button class="button button-secondary" @onclick="PickSourceFolderAsync" disabled="@isBusy">选择视频目录</button>
+            <button class="button button-secondary" @onclick="PickTargetFolderAsync" disabled="@isBusy">选择目标目录</button>
+            <button class="button button-primary" @onclick="ExtractAsync" disabled="@(!CanExtract)">FFmpeg 抽帧</button>
+        </div>
+    </header>
+
+    @if (!ReviewService.IsDesktopSupported)
+    {
+        <section class="empty-state">
+            <h2>请使用 Windows 或 macOS 桌面端</h2>
+            <p>视频文件夹选择、FFmpeg 抽帧和默认播放器打开都需要 MAUI 桌面运行环境。</p>
+        </section>
+    }
+    else
+    {
+        <section class="workspace-bar">
+            <div>
+                <span class="label">视频目录</span>
+                <strong>@(string.IsNullOrWhiteSpace(sourceFolderPath) ? "未选择" : sourceFolderPath)</strong>
+            </div>
+            <div>
+                <span class="label">目标目录</span>
+                <strong>@(string.IsNullOrWhiteSpace(targetFolderPath) ? "未选择" : targetFolderPath)</strong>
+            </div>
+            <div class="progress-area">
+                <span>@statusMessage</span>
+                <progress value="@progressCurrent" max="@Math.Max(progressTotal, 1)"></progress>
+            </div>
+        </section>
+
+        <main class="review-grid">
+            <aside class="queue-panel">
+                <div class="panel-heading">
+                    <h2>视频队列</h2>
+                    <span>@CurrentPositionText</span>
+                </div>
+
+                <div class="stats-grid">
+                    <div><strong>@stats.Total</strong><span>全部</span></div>
+                    <div><strong>@stats.Pending</strong><span>待处理</span></div>
+                    <div><strong>@stats.Keep</strong><span>保留</span></div>
+                    <div><strong>@stats.Delete</strong><span>删除</span></div>
+                    <div><strong>@stats.Later</strong><span>待定</span></div>
+                </div>
+
+                <div class="video-list">
+                    @foreach (var item in videos)
+                    {
+                        <button class="video-row @(item == CurrentVideo ? "active" : null)" @onclick="() => SelectVideo(item)">
+                            <span class="video-title">@item.FileName</span>
+                            <span class="video-meta">@FormatSize(item.SizeBytes) · @DecisionText(item.Decision)</span>
+                        </button>
+                    }
+                </div>
+            </aside>
+
+            <section class="preview-panel">
+                @if (CurrentVideo is null)
+                {
+                    <div class="empty-state in-panel">
+                        <h2>选择一个视频文件夹开始</h2>
+                        <p>工具会扫描常见视频格式，并把抽帧和分类结果写入你选择的目标目录。</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="preview-toolbar">
+                        <div>
+                            <span class="label">当前视频</span>
+                            <h2>@CurrentVideo.FileName</h2>
+                            <p>@FormatDuration(CurrentVideo.Duration) · @FormatSize(CurrentVideo.SizeBytes)</p>
+                        </div>
+                        <div class="preview-tools">
+                            <button class="icon-button wide" title="删除当前视频旧预览，并按当前模式重新抽帧" @onclick="ExtractCurrentAsync" disabled="@(!CanExtractCurrent)">再次抽帧</button>
+                            <button class="icon-button wide" title="使用系统默认播放器打开" @onclick="OpenCurrentAsync">打开原视频</button>
+                        </div>
+                    </div>
+
+                    <div class="hero-preview">
+                        @if (SelectedFrame is null)
+                        {
+                            <div class="frame-placeholder">尚未抽帧</div>
+                        }
+                        else
+                        {
+                            <img src="@SelectedFrame.DataUri" alt="@CurrentVideo.FileName 预览帧" />
+                            <span class="frame-badge">@FrameKindText(SelectedFrame.Kind)</span>
+                        }
+                    </div>
+
+                    <div class="frame-strip">
+                        @foreach (var frame in CurrentVideo.Frames)
+                        {
+                            <button class="frame-thumb @(frame == SelectedFrame ? "active" : null)" @onclick="() => SelectedFrame = frame">
+                                <img src="@frame.DataUri" alt="@FrameKindText(frame.Kind)" />
+                                <span>@FrameKindText(frame.Kind)</span>
+                            </button>
+                        }
+                    </div>
+
+                    @if (pendingDuplicateDecision is not null)
+                    {
+                        <div class="confirm-bar">
+                            <span>@duplicateMessage</span>
+                            <button class="text-button danger" @onclick="ConfirmDuplicateMoveAsync">确认移动</button>
+                            <button class="text-button" @onclick="CancelDuplicateMove">取消</button>
+                        </div>
+                    }
+
+                    <div class="review-actions">
+                        <button class="nav-button" @onclick="PreviousVideo" disabled="@(!CanGoPrevious)" title="快捷键 A">上一个</button>
+                        <div class="decision-actions">
+                            <button class="decision keep" @onclick="() => ClassifyCurrentAsync(ReviewDecision.Keep)" disabled="@isBusy" title="快捷键 1">保留</button>
+                            <button class="decision later" @onclick="() => ClassifyCurrentAsync(ReviewDecision.Later)" disabled="@isBusy" title="快捷键 2">待定</button>
+                            <button class="decision delete" @onclick="() => ClassifyCurrentAsync(ReviewDecision.Delete)" disabled="@isBusy" title="快捷键 3">删除</button>
+                        </div>
+                        <button class="nav-button" @onclick="NextVideo" disabled="@(!CanGoNext)" title="快捷键 D">下一个</button>
+                    </div>
+                }
+            </section>
+
+            <aside class="log-panel">
+                <div class="panel-heading">
+                    <h2>运行日志</h2>
+                    <button class="text-button" @onclick="ClearLogs" disabled="@(logs.Count == 0)">清空</button>
+                </div>
+
+                <div class="log-list">
+                    @if (logs.Count == 0)
+                    {
+                        <p class="log-empty">暂无日志</p>
+                    }
+                    else
+                    {
+                        @foreach (var log in logs)
+                        {
+                            <div class="log-row">@log</div>
+                        }
+                    }
+                </div>
+            </aside>
+        </main>
+    }
+</div>
+
+@code {
+    private readonly List<VideoReviewItem> videos = [];
+    private readonly List<string> logs = [];
+    private string? sourceFolderPath;
+    private string? targetFolderPath;
+    private ElementReference shellElement;
+    private int selectedIndex = -1;
+    private FramePreview? SelectedFrame;
+    private ReviewDecision? pendingDuplicateDecision;
+    private string? duplicateMessage;
+    private bool isBusy;
+    private ExtractionPreset selectedPreset = ExtractionPreset.Balanced;
+    private string statusMessage = "等待选择文件夹";
+    private int progressCurrent;
+    private int progressTotal = 1;
+
+    private VideoReviewItem? CurrentVideo => selectedIndex >= 0 && selectedIndex < videos.Count ? videos[selectedIndex] : null;
+    private bool CanExtract => !isBusy && !string.IsNullOrWhiteSpace(targetFolderPath) && videos.Count > 0;
+    private bool CanExtractCurrent => !isBusy && !string.IsNullOrWhiteSpace(targetFolderPath) && CurrentVideo is not null;
+    private bool CanGoPrevious => !isBusy && selectedIndex > 0;
+    private bool CanGoNext => !isBusy && selectedIndex >= 0 && selectedIndex < videos.Count - 1;
+    private string CurrentPositionText => CurrentVideo is null ? "0 / 0" : $"{selectedIndex + 1} / {videos.Count}";
+
+    private ReviewStats stats => new(
+        videos.Count,
+        videos.Count(video => video.Decision == ReviewDecision.Unreviewed),
+        videos.Count(video => video.Decision == ReviewDecision.Keep),
+        videos.Count(video => video.Decision == ReviewDecision.Delete),
+        videos.Count(video => video.Decision == ReviewDecision.Later));
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await shellElement.FocusAsync();
+        }
+    }
+
+    private async Task PickSourceFolderAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            var picked = await ReviewService.PickFolderAsync();
+            if (string.IsNullOrWhiteSpace(picked))
+            {
+                statusMessage = "已取消选择";
+                AddLog("已取消视频目录选择。");
+                return;
+            }
+
+            sourceFolderPath = picked;
+            targetFolderPath ??= picked;
+            AddLog($"选择视频目录：{picked}");
+            videos.Clear();
+            videos.AddRange(await ReviewService.ScanVideosAsync(picked));
+            if (!string.IsNullOrWhiteSpace(targetFolderPath))
+            {
+                await ReviewService.LoadExistingFramesAsync(targetFolderPath, videos);
+            }
+            selectedIndex = videos.Count > 0 ? 0 : -1;
+            SelectDefaultFrame();
+            progressCurrent = 0;
+            progressTotal = Math.Max(videos.Count, 1);
+            statusMessage = videos.Count == 0 ? "没有找到视频文件" : $"找到 {videos.Count} 个视频";
+            AddLog(statusMessage);
+            if (targetFolderPath == picked)
+            {
+                AddLog("目标目录默认使用视频目录，可点击“选择目标目录”改到其他位置。");
+            }
+        });
+    }
+
+    private async Task PickTargetFolderAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            var picked = await ReviewService.PickFolderAsync();
+            if (string.IsNullOrWhiteSpace(picked))
+            {
+                statusMessage = "已取消选择";
+                AddLog("已取消目标目录选择。");
+                return;
+            }
+
+            targetFolderPath = picked;
+            await ReviewService.LoadExistingFramesAsync(targetFolderPath, videos);
+            SelectDefaultFrame();
+            statusMessage = $"目标目录：{picked}";
+            AddLog(statusMessage);
+            AddLog($"已加载目标目录中已有抽帧：{videos.Count(video => video.Frames.Count > 0)} 个视频");
+        });
+    }
+
+    private async Task ExtractAsync()
+    {
+        if (targetFolderPath is null)
+        {
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            var progress = new Progress<ExtractionProgress>(value =>
+            {
+                progressCurrent = value.Current;
+                progressTotal = value.Total;
+                statusMessage = value.Message;
+                AddLog($"{value.Current}/{value.Total} {value.Message}");
+                InvokeAsync(StateHasChanged);
+            });
+
+            var pendingVideos = videos.Where(video => video.Frames.Count == 0).ToList();
+            if (pendingVideos.Count == 0)
+            {
+                statusMessage = "所有视频都已有抽帧";
+                AddLog(statusMessage);
+                return;
+            }
+
+            AddLog($"开始补齐抽帧：{pendingVideos.Count} 个未抽帧视频，模式：{PresetText(selectedPreset)}。");
+            await ReviewService.ExtractFramesAsync(targetFolderPath, pendingVideos, overwriteExisting: false, preset: selectedPreset, progress: progress);
+            SelectDefaultFrame();
+            AddLog("抽帧完成。");
+        });
+    }
+
+    private async Task ExtractCurrentAsync()
+    {
+        if (targetFolderPath is null || CurrentVideo is null)
+        {
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            var current = CurrentVideo;
+            var progress = new Progress<ExtractionProgress>(value =>
+            {
+                progressCurrent = value.Current;
+                progressTotal = value.Total;
+                statusMessage = value.Message;
+                AddLog($"当前视频 {value.Message}");
+                InvokeAsync(StateHasChanged);
+            });
+
+            AddLog($"清理旧预览并重新抽帧：{current.FileName}，模式：{PresetText(selectedPreset)}");
+            await ReviewService.ExtractFramesAsync(targetFolderPath, [current], overwriteExisting: true, preset: selectedPreset, progress: progress);
+            SelectedFrame = current.Frames.LastOrDefault(frame => frame.Kind == FrameKind.Random) ?? current.Frames.FirstOrDefault();
+            AddLog($"当前视频抽帧完成：{current.FileName}");
+        });
+    }
+
+    private async Task OpenCurrentAsync()
+    {
+        if (CurrentVideo is null)
+        {
+            return;
+        }
+
+        await ReviewService.OpenVideoAsync(CurrentVideo.CurrentPath);
+        AddLog($"已请求系统默认播放器打开：{CurrentVideo.FileName}");
+    }
+
+    private async Task ClassifyCurrentAsync(ReviewDecision decision, bool confirmedDuplicate = false)
+    {
+        if (CurrentVideo is null || targetFolderPath is null)
+        {
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            var current = CurrentVideo;
+            if (!confirmedDuplicate && HasDuplicateTargetFile(current, decision))
+            {
+                pendingDuplicateDecision = decision;
+                duplicateMessage = $"目标目录“{DecisionText(decision)}”已存在同名文件：{current.FileName}。确认后会移动并自动追加序号，避免覆盖。";
+                statusMessage = "检测到同名文件，等待确认";
+                AddLog(duplicateMessage);
+                return;
+            }
+
+            pendingDuplicateDecision = null;
+            duplicateMessage = null;
+            await ReviewService.ClassifyAsync(current, targetFolderPath, decision);
+            statusMessage = $"{current.FileName} 已移动到 {DecisionText(decision)}";
+            AddLog(statusMessage);
+            if (selectedIndex < videos.Count - 1)
+            {
+                selectedIndex++;
+                SelectDefaultFrame();
+            }
+            else
+            {
+                SelectDefaultFrame();
+            }
+        });
+    }
+
+    private async Task ConfirmDuplicateMoveAsync()
+    {
+        if (pendingDuplicateDecision is null)
+        {
+            return;
+        }
+
+        var decision = pendingDuplicateDecision.Value;
+        await ClassifyCurrentAsync(decision, confirmedDuplicate: true);
+    }
+
+    private void CancelDuplicateMove()
+    {
+        AddLog("已取消同名文件移动。");
+        pendingDuplicateDecision = null;
+        duplicateMessage = null;
+        statusMessage = "已取消移动";
+    }
+
+    private async Task RunBusyAsync(Func<Task> action)
+    {
+        try
+        {
+            isBusy = true;
+            await action();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = ex.Message;
+            AddLog($"错误：{ex.Message}");
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private void SelectVideo(VideoReviewItem item)
+    {
+        selectedIndex = videos.IndexOf(item);
+        pendingDuplicateDecision = null;
+        duplicateMessage = null;
+        SelectDefaultFrame();
+    }
+
+    private void PreviousVideo()
+    {
+        if (CanGoPrevious)
+        {
+            selectedIndex--;
+            pendingDuplicateDecision = null;
+            duplicateMessage = null;
+            SelectDefaultFrame();
+        }
+    }
+
+    private void NextVideo()
+    {
+        if (CanGoNext)
+        {
+            selectedIndex++;
+            pendingDuplicateDecision = null;
+            duplicateMessage = null;
+            SelectDefaultFrame();
+        }
+    }
+
+    private bool HasDuplicateTargetFile(VideoReviewItem item, ReviewDecision decision)
+    {
+        if (targetFolderPath is null)
+        {
+            return false;
+        }
+
+        var folderName = decision switch
+        {
+            ReviewDecision.Keep => "保留",
+            ReviewDecision.Delete => "删除",
+            ReviewDecision.Later => "待定",
+            _ => null
+        };
+
+        if (folderName is null)
+        {
+            return false;
+        }
+
+        var targetPath = Path.Combine(targetFolderPath, folderName, Path.GetFileName(item.CurrentPath));
+        return File.Exists(targetPath)
+            && !Path.GetFullPath(item.CurrentPath).Equals(Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void PreviousFrame()
+    {
+        var frames = CurrentVideo?.Frames;
+        if (frames is null || frames.Count == 0)
+        {
+            return;
+        }
+
+        var index = SelectedFrame is null ? 0 : frames.IndexOf(SelectedFrame);
+        SelectedFrame = frames[Math.Max(index - 1, 0)];
+    }
+
+    private void NextFrame()
+    {
+        var frames = CurrentVideo?.Frames;
+        if (frames is null || frames.Count == 0)
+        {
+            return;
+        }
+
+        var index = SelectedFrame is null ? -1 : frames.IndexOf(SelectedFrame);
+        SelectedFrame = frames[Math.Min(index + 1, frames.Count - 1)];
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs args)
+    {
+        if (isBusy || args.Repeat)
+        {
+            return;
+        }
+
+        switch (args.Key)
+        {
+            case "a":
+            case "A":
+                PreviousVideo();
+                break;
+            case "d":
+            case "D":
+                NextVideo();
+                break;
+            case "ArrowLeft":
+                PreviousFrame();
+                break;
+            case "ArrowRight":
+                NextFrame();
+                break;
+            case "1":
+                await ClassifyCurrentAsync(ReviewDecision.Keep);
+                break;
+            case "2":
+                await ClassifyCurrentAsync(ReviewDecision.Later);
+                break;
+            case "3":
+                await ClassifyCurrentAsync(ReviewDecision.Delete);
+                break;
+        }
+    }
+
+    private void SelectDefaultFrame()
+    {
+        SelectedFrame = CurrentVideo?.Frames.FirstOrDefault();
+    }
+
+    private void AddLog(string message)
+    {
+        logs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
+        if (logs.Count > 120)
+        {
+            logs.RemoveRange(120, logs.Count - 120);
+        }
+    }
+
+    private void ClearLogs()
+    {
+        logs.Clear();
+    }
+
+    private static string DecisionText(ReviewDecision decision) => decision switch
+    {
+        ReviewDecision.Keep => "保留",
+        ReviewDecision.Delete => "删除",
+        ReviewDecision.Later => "待定",
+        _ => "未处理"
+    };
+
+    private static string FrameKindText(FrameKind kind) => kind == FrameKind.Key ? "关键帧" : "随机帧";
+
+    private static string PresetText(ExtractionPreset preset) => preset switch
+    {
+        ExtractionPreset.SensitiveScene => "敏感场景",
+        ExtractionPreset.StrictScene => "严格场景",
+        ExtractionPreset.EvenCoverage => "均匀覆盖",
+        ExtractionPreset.RandomReview => "随机巡检",
+        _ => "均衡"
+    };
+
+    private static string FormatDuration(TimeSpan? duration)
+    {
+        if (duration is null)
+        {
+            return "时长未知";
+        }
+
+        return duration.Value.TotalHours >= 1
+            ? duration.Value.ToString(@"hh\:mm\:ss")
+            : duration.Value.ToString(@"mm\:ss");
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB"];
+        var size = (double)bytes;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return $"{size:0.#} {units[unit]}";
+    }
+}

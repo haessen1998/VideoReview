@@ -1,0 +1,32 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# Local FFmpeg binaries can be copied here for development, but should not be committed.
+!VideoReview/VideoReview/Tools/ffmpeg/bin/
+VideoReview/VideoReview/Tools/ffmpeg/bin/*
+!VideoReview/VideoReview/Tools/ffmpeg/bin/.gitkeep
+
+# VideoReview runtime output
+VideoReviewFrames/
+保留/
+删除/
+待定/
