@@ -1,4 +1,4 @@
 <Solution>
-  <Project Path="VideoReview/VideoReview.Shared/VideoReview.Shared.csproj" />
-  <Project Path="VideoReview/VideoReview/VideoReview.csproj" />
+  <Project Path="src/VideoReview.Shared/VideoReview.Shared.csproj" />
+  <Project Path="src/VideoReview/VideoReview.csproj" />
 </Solution>
