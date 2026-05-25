@@ -16,8 +16,6 @@ public static class MauiProgram
                 fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
             });
 
-        // Add device-specific services used by the VideoReview.Shared project
-        builder.Services.AddSingleton<IFormFactor, FormFactor>();
         builder.Services.AddSingleton<IVideoReviewService, DesktopVideoReviewService>();
 
         builder.Services.AddMauiBlazorWebView();

@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <CopyRetryCount>20</CopyRetryCount>
+    <CopyRetryDelayMilliseconds>500</CopyRetryDelayMilliseconds>
+  </PropertyGroup>
+</Project>

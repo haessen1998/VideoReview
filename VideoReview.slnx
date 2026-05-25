@@ -1,8 +1,4 @@
 <Solution>
-  <Project Path="VideoReview.AppHost/VideoReview.AppHost.csproj" />
-  <Project Path="VideoReview.ServiceDefaults/VideoReview.ServiceDefaults.csproj" />
   <Project Path="VideoReview/VideoReview.Shared/VideoReview.Shared.csproj" />
-  <Project Path="VideoReview/VideoReview.Web.Client/VideoReview.Web.Client.csproj" />
-  <Project Path="VideoReview/VideoReview.Web/VideoReview.Web.csproj" />
   <Project Path="VideoReview/VideoReview/VideoReview.csproj" />
 </Solution>
